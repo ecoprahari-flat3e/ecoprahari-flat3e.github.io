@@ -464,12 +464,35 @@ function flyTo(pos,target,ms=900){
   anim={st:performance.now(),ms,p0,t0,p1,t1};
 }
 function setView(btn){ ['vOver','vTop','vEntry'].forEach(id=>$(id).setAttribute('aria-pressed', String(id===btn))); }
-function overviewPose(){ return portrait() ? {pos:[-7.5,17.5,5.2], tgt:[8.2,0,4.4]} : {pos:[4.0,13.5,17.5], tgt:[8.4,0,4.6]}; }
-function topPose(){ return portrait() ? {pos:[8.45,30,4.95], tgt:[8.5,0,4.95]} : {pos:[8.5,21,4.96], tgt:[8.5,0,4.95]}; }
-function overview(){ setView('vOver'); const p=overviewPose(); flyTo(p.pos,p.tgt); }
-function topView(){ setView('vTop'); const p=topPose(); flyTo(p.pos,p.tgt); }
-function entryView(){ setView('vEntry'); flyTo([7.6,1.6,8.25],[6.2,1.0,4.5]); }
-function flyRoom(r){ setView(''); flyTo([r.x+r.cam[0], r.cam[1], r.z+r.cam[2]],[r.x,0.6,r.z]); }
+// Fit the whole flat (with stairs and lift) to the screen: find the closest camera distance at which
+// every corner of the model is still on screen, then centre it. Leaves room for the title and the button bar.
+const BOUND = [[0,-0.3,0],[17.1,-0.3,0],[0,-0.3,9.92],[17.1,-0.3,9.92],[0,1.3,0],[17.1,1.3,0],[0,1.3,9.92],[17.1,1.3,9.92]].map(p=>new THREE.Vector3(...p));
+const fitCam = new THREE.PerspectiveCamera();
+function fitPose(dirArr, tgtArr){
+  const dir=new THREE.Vector3(...dirArr).normalize(), tgt=new THREE.Vector3(...tgtArr), q=new THREE.Vector3();
+  fitCam.fov=camera.fov; fitCam.aspect=camera.aspect; fitCam.near=0.05; fitCam.far=300; fitCam.updateProjectionMatrix();
+  const topRoom = 1 - 2*(96/app.clientHeight), botRoom = -1 + 2*(78/app.clientHeight), side = 1 - 2*(10/app.clientWidth);
+  const extent = d=>{ fitCam.position.copy(tgt).addScaledVector(dir,d); fitCam.lookAt(tgt); fitCam.updateMatrixWorld();
+    let x0=9,x1=-9,y0=9,y1=-9; BOUND.forEach(p=>{ q.copy(p).project(fitCam); x0=Math.min(x0,q.x); x1=Math.max(x1,q.x); y0=Math.min(y0,q.y); y1=Math.max(y1,q.y); }); return {x0,x1,y0,y1}; };
+  for(let pass=0; pass<3; pass++){
+    let lo=2, hi=120;
+    for(let i=0;i<40;i++){ const m=(lo+hi)/2, e=extent(m); const fits=(e.x1-e.x0)<=2*side && (e.y1-e.y0)<=(topRoom-botRoom); fits? hi=m : lo=m; }
+    const e=extent(hi);
+    // shift the target so the model sits centred in the free area of the screen
+    const cx=(e.x0+e.x1)/2, cy=(e.y0+e.y1)/2 - (topRoom+botRoom)/2;
+    const right=new THREE.Vector3().setFromMatrixColumn(fitCam.matrixWorld,0), up=new THREE.Vector3().setFromMatrixColumn(fitCam.matrixWorld,1);
+    const halfH=Math.tan(fitCam.fov*Math.PI/360)*hi, halfW=halfH*fitCam.aspect;
+    tgt.addScaledVector(right, cx*halfW).addScaledVector(up, cy*halfH);
+    if(pass===2) return {pos:tgt.clone().addScaledVector(dir,hi).toArray(), tgt:tgt.toArray()};
+  }
+}
+function overviewPose(){ return portrait() ? fitPose([-15.7,17.5,0.8],[8.5,0,4.9]) : fitPose([-4.4,13.5,12.9],[8.5,0,4.9]); }
+function topPose(){ return portrait() ? fitPose([-0.004,1,0],[8.5,0,4.95]) : fitPose([0,1,0.004],[8.5,0,4.95]); }
+let mode='over';
+function overview(){ mode='over'; setView('vOver'); const p=overviewPose(); flyTo(p.pos,p.tgt); }
+function topView(){ mode='top'; setView('vTop'); const p=topPose(); flyTo(p.pos,p.tgt); }
+function entryView(){ mode=''; setView('vEntry'); flyTo([7.6,1.6,8.25],[6.2,1.0,4.5]); }
+function flyRoom(r){ mode=''; setView(''); flyTo([r.x+r.cam[0], r.cam[1], r.z+r.cam[2]],[r.x,0.6,r.z]); }
 $('vOver').onclick=overview; $('vTop').onclick=topView; $('vEntry').onclick=entryView;
 
 const cutPlane = new THREE.Plane(new THREE.Vector3(0,-1,0), 1.25);
@@ -485,9 +508,10 @@ $('closeSheet').onclick=closeSheet;
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeSheet(); });
 
 /* ---------- loop ---------- */
-let lastPortrait=null;
-function resize(){ const w=app.clientWidth, h=app.clientHeight; renderer.setSize(w,h,false); camera.aspect=w/h; camera.fov = w<560? 55:45; camera.updateProjectionMatrix();
-  const p=portrait(); if(p!==lastPortrait){ const was=lastPortrait; lastPortrait=p; if(was===null){ const o=overviewPose(); camera.position.set(...o.pos); controls.target.set(...o.tgt); controls.update(); } } }
+let first=true;
+function resize(){ const w=app.clientWidth, h=app.clientHeight; if(!w||!h) return; renderer.setSize(w,h,false); camera.aspect=w/h; camera.fov = w<560? 55:45; camera.updateProjectionMatrix();
+  // keep the model filling the screen when the window or phone is resized/rotated, unless the viewer has moved the camera
+  if(first || mode==='over' || mode==='top'){ const o = mode==='top'? topPose() : overviewPose(); anim=null; camera.position.set(...o.pos); controls.target.set(...o.tgt); controls.update(); first=false; } }
 new ResizeObserver(resize).observe(app); resize();
 const v=new THREE.Vector3(), v2=new THREE.Vector3(), needle=$('needle');
 function place(el,x,y,z){ v.set(x,y,z).project(camera); const vis = v.z<1 && Math.abs(v.x)<1.05 && Math.abs(v.y)<1.05;
@@ -506,7 +530,7 @@ function tick(now){
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
-let hinted=false; controls.addEventListener('start',()=>{ anim=null; canvas.style.cursor='grabbing'; if(!hinted){ hinted=true; $('hint').style.opacity='0'; } });
+let hinted=false; controls.addEventListener('start',()=>{ anim=null; mode=''; canvas.style.cursor='grabbing'; if(!hinted){ hinted=true; $('hint').style.opacity='0'; } });
 controls.addEventListener('end',()=>{ canvas.style.cursor='grab'; });
 })();
 </script>
